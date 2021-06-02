@@ -8,30 +8,80 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using Data.DTO;
+using System.Timers;
 
 namespace API.Services
 {
+  /*
+   TODO:
+    Сделать валидацию регистрации
+    Сделать валидацию двойного входа
+    Сделать валидацию максимального кол-ва пользователей в команде
+    Сделать валидацию наличия судьи в игре
+    Ограничить старт игры при недостаточном кол-ве человек в командах
+    Реализовать инструментарий судьи
+   */
   public class RoomService
   {
     private IHubContext<GameHub> context;
-
+    private GameService gameService;
     private readonly IServiceScopeFactory scopeFactory;
     public RoomService(
       IHubContext<GameHub> hubContext,
+      GameService gameService,
       IServiceScopeFactory scopeFactory)
     {
       Debug.WriteLine("[Room service] Init start");
       this.context = hubContext;
       this.rooms = new List<Room>();
+      this.witchTeam = new List<User>();
+      this.humanTeam = new List<User>();
       this.onlineUsers = new Dictionary<Guid, string>();
+      this.gameService = gameService;
       this.scopeFactory = scopeFactory;
       Debug.WriteLine("[Room service] Init end");
+    }
+
+    public void JoinWitchTeam(User user)
+    {
+      if (!witchTeam.Contains(user))
+      {
+        if (humanTeam.Contains(user))
+        {
+          humanTeam.Remove(user);
+        }
+        witchTeam.Add(user);
+        gameService.GiveRole(user.Id, GameService.GameRoles.Witch);
+        this.context.Clients.All.SendAsync("onTeamsUpdate", witchTeam, humanTeam).Wait();
+      }
+    }
+    public void JoinHumanTeam(User user)
+    {
+      if (!humanTeam.Contains(user))
+      {
+        if (witchTeam.Contains(user))
+        {
+          witchTeam.Remove(user);
+        }
+        humanTeam.Add(user);
+        gameService.GiveRole(user.Id, GameService.GameRoles.Human);
+        this.context.Clients.All.SendAsync("onTeamsUpdate", witchTeam, humanTeam).Wait();
+      }
     }
 
     public void UserOnline(string connectionId, User user)
     {
       Debug.WriteLine("[Room service] User online start");
-      onlineUsers.Add(user.Id, connectionId);
+      if (onlineUsers.ContainsKey(user.Id))
+      {
+        Debug.WriteLine("[Room service] User already online");
+      }
+      else
+      {
+        onlineUsers.Add(user.Id, connectionId);
+        gameService.userRoles.Add(user.Id, GameService.GameRoles.Spectator);
+      }
       Debug.WriteLine("[Room service] User online end");
     }
 
@@ -39,6 +89,7 @@ namespace API.Services
     {
       Debug.WriteLine("[Room service] User offline start");
       onlineUsers.Remove(userId);
+      gameService.userRoles.Remove(userId);
       Debug.WriteLine("[Room service] User offline end");
     }
 
@@ -95,6 +146,26 @@ namespace API.Services
       Debug.WriteLine("[Room service] Room host end");
       return room.Id;
     }
+
+    public void StartGame(Guid roomId)
+    {
+      this.context.Clients.Group(this.GetGroupKey(roomId)).SendAsync("onGameStarted").Wait();
+      Room tmpRoom = this.rooms.Find(x => x.Id == roomId);
+      PausableTimer tmpTimer = new PausableTimer(tmpRoom.HumanTime.TotalMilliseconds);
+      tmpTimer.AutoReset = false;
+      tmpTimer.Elapsed += (Object source, ElapsedEventArgs e) => { this.context.Clients.Group(this.GetGroupKey(roomId)).SendAsync("onHumanTimeEnd").Wait(); };
+      this.gameService.humanTimers.Add(roomId, tmpTimer);
+      tmpTimer = new PausableTimer(tmpRoom.WitchPrepTime.TotalMilliseconds);
+      tmpTimer.AutoReset = false;
+      tmpTimer.Elapsed += (Object source, ElapsedEventArgs e) => { this.context.Clients.Group(this.GetGroupKey(roomId)).SendAsync("onWitchPrepTimeEnd").Wait(); };
+      this.gameService.witchPrepTimers.Add(roomId, tmpTimer);
+      tmpTimer = new PausableTimer(tmpRoom.WitchAnswerTime.TotalMilliseconds);
+      tmpTimer.AutoReset = false;
+      tmpTimer.Elapsed += (Object source, ElapsedEventArgs e) => { this.context.Clients.Group(this.GetGroupKey(roomId)).SendAsync("onWitchAnswerTimeEnd").Wait(); };
+      this.gameService.witchAnswerTimers.Add(roomId, tmpTimer);
+      this.gameService.witchPrepTimers[roomId].Start();
+    }
+
     public void AddStory(Guid userId, IFormFile storyFile)
     {
 
@@ -128,6 +199,7 @@ namespace API.Services
       if (this.IsHost(userId, roomId) && (this.rooms.Find(x => x.Id == roomId) != null))
       {
         this.rooms.Find(x => x.Id == roomId).Name = name;
+        context.Clients.Group(GetGroupKey(roomId)).SendAsync("onRoomChange", new RoomDTO(this.rooms.Find(x => x.Id == roomId)));
       }
       Debug.WriteLine("[Room service] change room name end");
     }
@@ -147,6 +219,7 @@ namespace API.Services
         {
           var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationContext>();
           this.rooms.Find(x => x.Id == roomId).Host = dbContext.Users.Find(newHostId);
+          context.Clients.Group(GetGroupKey(roomId)).SendAsync("onRoomChange", new RoomDTO(this.rooms.Find(x => x.Id == roomId)));
         }
       }
       Debug.WriteLine("[Room service] change host end");
@@ -167,6 +240,84 @@ namespace API.Services
       }
       Debug.WriteLine("[Room service] change password end");
     }
+
+    public void ChangeHumansAmount(Guid roomId, Guid userId, int newAmount)
+    {
+      Debug.WriteLine("[Room service] ChangeHumansAmount start");
+      if (this.IsHost(userId, roomId) && (this.rooms.Find(x => x.Id == roomId) != null))
+      {
+        this.rooms.Find(x => x.Id == roomId).Humans = newAmount;
+        context.Clients.Group(GetGroupKey(roomId)).SendAsync("onRoomChange", new RoomDTO(this.rooms.Find(x => x.Id == roomId)));
+      }
+      Debug.WriteLine("[Room service] ChangeHumansAmount end");
+    }
+
+    public void ChangeWitchesAmount(Guid roomId, Guid userId, int newAmount)
+    {
+      Debug.WriteLine("[Room service] ChangeWitchesAmount start");
+      if (this.IsHost(userId, roomId) && (this.rooms.Find(x => x.Id == roomId) != null))
+      {
+        this.rooms.Find(x => x.Id == roomId).Witches = newAmount;
+        context.Clients.Group(GetGroupKey(roomId)).SendAsync("onRoomChange", new RoomDTO(this.rooms.Find(x => x.Id == roomId)));
+      }
+      Debug.WriteLine("[Room service] ChangeWitchesAmount end");
+    }
+
+    public void ChangeVoiceAbility(Guid roomId, Guid userId, bool voice)
+    {
+      Debug.WriteLine("[Room service] ChangeVoiceAbility start");
+      if (this.IsHost(userId, roomId) && (this.rooms.Find(x => x.Id == roomId) != null))
+      {
+        this.rooms.Find(x => x.Id == roomId).WithVoice = voice;
+        context.Clients.Group(GetGroupKey(roomId)).SendAsync("onRoomChange", new RoomDTO(this.rooms.Find(x => x.Id == roomId)));
+      }
+      Debug.WriteLine("[Room service] ChangeVoiceAbility end");
+    }
+
+    public void ChangeJudgeAbility(Guid roomId, Guid userId, bool judge)
+    {
+      Debug.WriteLine("[Room service] ChangeJudgeAbility start");
+      if (this.IsHost(userId, roomId) && (this.rooms.Find(x => x.Id == roomId) != null))
+      {
+        this.rooms.Find(x => x.Id == roomId).Judge = judge;
+        context.Clients.Group(GetGroupKey(roomId)).SendAsync("onRoomChange", new RoomDTO(this.rooms.Find(x => x.Id == roomId)));
+      }
+      Debug.WriteLine("[Room service] ChangeJudgeAbility end");
+    }
+
+    public void ChangeHumanTime(Guid roomId, Guid userId, TimeSpan newTime)
+    {
+      Debug.WriteLine("[Room service] ChangeHumanTime start");
+      if (this.IsHost(userId, roomId) && (this.rooms.Find(x => x.Id == roomId) != null))
+      {
+        this.rooms.Find(x => x.Id == roomId).HumanTime = newTime;
+        context.Clients.Group(GetGroupKey(roomId)).SendAsync("onRoomChange", new RoomDTO(this.rooms.Find(x => x.Id == roomId)));
+      }
+      Debug.WriteLine("[Room service] ChangeHumanTime end");
+    }
+
+    public void ChangeWitchPrepTime(Guid roomId, Guid userId, TimeSpan newTime)
+    {
+      Debug.WriteLine("[Room service] ChangeWitchPrepTime start");
+      if (this.IsHost(userId, roomId) && (this.rooms.Find(x => x.Id == roomId) != null))
+      {
+        this.rooms.Find(x => x.Id == roomId).WitchPrepTime = newTime;
+        context.Clients.Group(GetGroupKey(roomId)).SendAsync("onRoomChange", new RoomDTO(this.rooms.Find(x => x.Id == roomId)));
+      }
+      Debug.WriteLine("[Room service] ChangeWitchPrepTime end");
+    }
+
+    public void ChangeWitchAnswerTime(Guid roomId, Guid userId, TimeSpan newTime)
+    {
+      Debug.WriteLine("[Room service] ChangeWitchAnswerTime start");
+      if (this.IsHost(userId, roomId) && (this.rooms.Find(x => x.Id == roomId) != null))
+      {
+        this.rooms.Find(x => x.Id == roomId).WitchAnswerTime = newTime;
+        context.Clients.Group(GetGroupKey(roomId)).SendAsync("onRoomChange", new RoomDTO(this.rooms.Find(x => x.Id == roomId)));
+      }
+      Debug.WriteLine("[Room service] ChangeWitchAnswerTime end");
+    }
+
     private bool IsHost(Guid userId, Guid roomId)
     {
       return userId == this.rooms.Find(x => x.Id == roomId)?.Host?.Id;
@@ -179,5 +330,7 @@ namespace API.Services
 
     public List<Room> rooms { get; }
     public Dictionary<Guid, string> onlineUsers { get; }
+    public List<User> witchTeam { get; }
+    public List<User> humanTeam { get; }
   }
 }

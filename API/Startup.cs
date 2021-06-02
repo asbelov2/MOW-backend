@@ -71,6 +71,7 @@ namespace API
                 });
       services.AddSignalR();
       services.AddSingleton<RoomService>();
+      services.AddSingleton<GameService>();
       services.AddControllers();
     }
 

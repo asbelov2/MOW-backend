@@ -14,6 +14,10 @@ using System.Linq;
 
 namespace API.Controllers
 {
+  /*
+      TODO: Отделить StoryController
+   */
+
   [Route("api/[controller]")]
   [ApiController]
   public class RoomController : ControllerBase
@@ -59,14 +63,14 @@ namespace API.Controllers
     /// <returns>Room.</returns>
     [Authorize]
     [HttpGet("{id}")]
-    public RoomDTO Get(Guid roomId)
+    public RoomDTO Get(Guid id)
     {
       Debug.WriteLine("[Room controller] Get room start");
-      if (this.roomService.rooms.FirstOrDefault(x => x.Id == roomId) != null)
-      {
-        return new RoomDTO(this.roomService.rooms.FirstOrDefault(x => x.Id == roomId));
-      }
       Debug.WriteLine("[Room controller] Get room end");
+      if (this.roomService.rooms.FirstOrDefault(x => x.Id == id) != null)
+      {
+        return new RoomDTO(this.roomService.rooms.FirstOrDefault(x => x.Id == id));
+      }
       return null;
     }
 
@@ -85,6 +89,19 @@ namespace API.Controllers
       {
         var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationContext>();
         return dbContext.Stories.ToList();
+      }
+    }
+
+    [Authorize]
+    [HttpGet("GetStory/{id}")]
+    public Story GetStory(Guid id)
+    {
+      Debug.WriteLine("[Room controller] Get stories start");
+      Debug.WriteLine("[Room controller] Get stories end");
+      using (var scope = this.scopeFactory.CreateScope())
+      {
+        var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationContext>();
+        return dbContext.Stories.Find(id);
       }
     }
 
@@ -117,6 +134,24 @@ namespace API.Controllers
         var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationContext>();
         return this.roomService.onlineUsers.Count;
       }
+    }
+
+    [Authorize]
+    [HttpGet("Witches")]
+    public List<User> Witches()
+    {
+      Debug.WriteLine("[Room controller] Get witches start");
+      Debug.WriteLine("[Room controller] Get witches end");
+      return this.roomService.witchTeam;
+    }
+
+    [Authorize]
+    [HttpGet("Humans")]
+    public List<User> Humans()
+    {
+      Debug.WriteLine("[Room controller] Get humans start");
+      Debug.WriteLine("[Room controller] Get humans end");
+      return this.roomService.humanTeam;
     }
 
     [Authorize]
@@ -223,6 +258,14 @@ namespace API.Controllers
       Debug.WriteLine("[Room controller] Host room end");
     }
 
+    [Authorize]
+    [HttpPost("StartGame")]
+    public void StartGame([FromForm]Guid roomId)
+    {
+      Debug.WriteLine("[Room controller] StartGame start");
+      this.roomService.StartGame(roomId);
+      Debug.WriteLine("[Room controller] StartGame end");
+    }
     /// <summary>
     /// Sets new host
     /// </summary>

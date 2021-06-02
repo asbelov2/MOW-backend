@@ -39,8 +39,11 @@ namespace Data
     public User Host { get; set; }
 
     public int Humans { get; set; }
+    public int Witches { get; set; }
 
     public TimeSpan HumanTime { get; set; }
+    public TimeSpan WitchAnswerTime { get; set; }
+    public TimeSpan WitchPrepTime { get; set; }
 
     /// <summary>
     /// Room ID.
@@ -61,14 +64,15 @@ namespace Data
 
     public Story Story { get; set; }
 
+    public String FakeStory { get; set; } = "";
+
     /// <summary>
     /// Collection of users in room.
     /// </summary>
     public ICollection<User> Users { get; }
 
-    public TimeSpan WitchAnswerTime { get; set; }
-    public int Witches { get; set; }
-    public TimeSpan WitchPrepTime { get; set; }
+
     public bool WithVoice { get; set; }
+    public bool IsStarted { get; set; }
   }
 }
